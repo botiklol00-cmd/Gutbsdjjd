@@ -11,56 +11,119 @@ on:
 jobs:
   build:
     runs-on: macos-latest
+    
+    env:
+      PROJECT_NAME: "your_project_name"
+      BUNDLE_ID: "com.yourcompany.yourgame"
 
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v2
+      uses: actions/checkout@v4
 
     - name: Download Godot
       run: |
-        wget https://github.com/godotengine/godot/releases/download/4.6-stable/Godot_v4.6-stable_macos.universal.zip
-        unzip Godot_v4.6-stable_macos.universal.zip -d godot
+        wget -q https://github.com/godotengine/godot/releases/download/4.6-stable/Godot_v4.6-stable_macos.universal.zip
+        unzip -q Godot_v4.6-stable_macos.universal.zip -d godot
         sudo mv godot/Godot.app /Applications/Godot.app
-        sudo ln -s /Applications/Godot.app/Contents/MacOS/Godot /usr/local/bin/godot
+        sudo ln -sf /Applications/Godot.app/Contents/MacOS/Godot /usr/local/bin/godot
 
-    - name: Download Godot Export Templates
+    - name: Download and install Godot Export Templates
       run: |
-        mkdir -p ~/Library/Application\ Support/Godot/templates/4.6.stable
-        cd ~/Library/Application\ Support/Godot/templates/4.6.stable
-        wget https://github.com/godotengine/godot/releases/download/4.6-stable/Godot_v4.6-stable_export_templates.tpz
-        tar -xzf Godot_v4.6-stable_export_templates.tpz -C ~/Library/Application\ Support/Godot/templates/4.6.stable
-        cd templates
-        mv * ..
-        cd ..
-        ls
+        # Создаем директории для шаблонов экспорта
+        mkdir -p ~/Library/Application\ Support/Godot/export_templates
+        mkdir -p ~/.local/share/godot/export_templates
+        
+        # Скачиваем шаблоны экспорта
+        wget -q https://github.com/godotengine/godot/releases/download/4.6-stable/Godot_v4.6-stable_export_templates.tpz
+        mkdir -p /tmp/export_templates
+        tar -xf Godot_v4.6-stable_export_templates.tpz -C /tmp/export_templates
+        
+        # Копируем шаблоны в правильные директории
+        mkdir -p ~/Library/Application\ Support/Godot/export_templates/4.6.stable
+        cp /tmp/export_templates/templates/ios.zip ~/Library/Application\ Support/Godot/export_templates/4.6.stable/
+        
+        # Также для пользователя runner
+        mkdir -p ~/.local/share/godot/export_templates/4.6.stable
+        cp /tmp/export_templates/templates/ios.zip ~/.local/share/godot/export_templates/4.6.stable/
+        
+        # Проверяем, что файл существует
+        ls -la ~/Library/Application\ Support/Godot/export_templates/4.6.stable/
+        ls -la ~/.local/share/godot/export_templates/4.6.stable/
+
 
     - name: Create build directory
       run: mkdir -p build
 
     - name: Export iOS project
-      run: godot --export-release "iOS" build/your_project_name.xcodeproj
-      env:
-        DISPLAY: :99.0
+      run: |
+        # Проверяем наличие шаблонов
+        echo "Checking export templates..."
+        ls -la ~/Library/Application\ Support/Godot/export_templates/
+        ls -la ~/Library/Application\ Support/Godot/export_templates/4.6.stable/
         
+        # Экспортируем проект
+        echo "Exporting iOS project..."
+        godot --headless --export-release iOS
+
+    - name: Check exported project
+      run: |
+        if [ -d "build/${{ env.PROJECT_NAME }}.xcodeproj" ]; then
+          echo "Xcode project exported successfully"
+          ls -la build/
+        else
+          echo "Error: Xcode project not found!"
+          ls -la build/
+          exit 1
+        fi
+
     - name: Set iOS Deployment Target
-      run: sed -i '' 's/IPHONEOS_DEPLOYMENT_TARGET = 10.0;/IPHONEOS_DEPLOYMENT_TARGET = 12.0;/' build/your_project_name.xcodeproj/project.pbxproj
+      run: |
+        if [ -f "build/${{ env.PROJECT_NAME }}.xcodeproj/project.pbxproj" ]; then
+          # Ищем текущую версию и заменяем
+          sed -i '' 's/IPHONEOS_DEPLOYMENT_TARGET = [0-9]\+\.[0-9]\+;/IPHONEOS_DEPLOYMENT_TARGET = 12.0;/' "build/${{ env.PROJECT_NAME }}.xcodeproj/project.pbxproj"
+          echo "Deployment target set to 12.0"
+        else
+          echo "Warning: project.pbxproj not found, trying alternative path..."
+          find build -name "project.pbxproj" -type f
+        fi
 
-
-    - name: Build iOS project
-      run: xcodebuild -project build/your_project_name.xcodeproj -scheme your_project_name -configuration Development -archivePath build/your_project_name.xcarchive archive \ CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO
-
-    - name: Export IPA
-      run: | 
+    - name: Build iOS project with xcodebuild
+      run: |
         cd build
-        cd your_project_name.xcarchive
-        cd Products
-        cd Applications
-        mkdir Payload
-        mv your_project_name.app Payload/
-        zip -r App.ipa Payload/
-        mv App.ipa ../../../
+        # Используем xcodebuild для сборки
+        xcodebuild -project "${{ env.PROJECT_NAME }}.xcodeproj" \
+          -scheme "${{ env.PROJECT_NAME }}" \
+          -configuration Release \
+          -archivePath "${{ env.PROJECT_NAME }}.xcarchive" \
+          archive \
+          CODE_SIGN_IDENTITY="" \
+          CODE_SIGNING_REQUIRED=NO \
+          CODE_SIGNING_ALLOWED=NO \
+          DEVELOPMENT_TEAM="" \
+          PROVISIONING_PROFILE_SPECIFIER="" \
+          -allowProvisioningUpdates \
+          -quiet
+
+    - name: Create IPA file
+      run: |
+        cd build
+        # Создаем Payload директорию
+        mkdir -p Payload
+        # Копируем .app bundle
+        if [ -d "${{ env.PROJECT_NAME }}.xcarchive/Products/Applications/${{ env.PROJECT_NAME }}.app" ]; then
+          cp -r "${{ env.PROJECT_NAME }}.xcarchive/Products/Applications/${{ env.PROJECT_NAME }}.app" Payload/
+          # Создаем IPA
+          zip -qr "${{ env.PROJECT_NAME }}.ipa" Payload/
+          echo "IPA created: ${{ env.PROJECT_NAME }}.ipa"
+          ls -lh "${{ env.PROJECT_NAME }}.ipa"
+        else
+          echo "Error: .app bundle not found!"
+          find . -name "*.app" -type d
+          exit 1
+        fi
+
     - name: Upload IPA to GitHub Artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: Ipa
-        path: build/App.ipa
+        name: iOS-App
+        path: build/${{ env.PROJECT_NAME }}.ipa
